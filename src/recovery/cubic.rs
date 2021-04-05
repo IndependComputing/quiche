@@ -27,7 +27,7 @@
 //! CUBIC Congestion Control
 //!
 //! This implementation is based on the following draft:
-//! <https://tools.ietf.org/html/draft-eggert-tcpm-rfc8312bis-02>
+//! <https://tools.ietf.org/html/draft-ietf-tcpm-rfc8312bis-00>
 //!
 //! Note that Slow Start can use HyStart++ when enabled.
 
@@ -64,14 +64,12 @@ const ALPHA_AIMD: f64 = 3.0 * (1.0 - BETA_CUBIC) / (1.0 + BETA_CUBIC);
 /// CUBIC State Variables.
 ///
 /// We need to keep those variables across the connection.
-/// k, w_max, w_last_max is described in the RFC.
+/// k, w_max, w_est is described in the RFC.
 #[derive(Debug, Default)]
 pub struct State {
     k: f64,
 
     w_max: f64,
-
-    w_last_max: f64,
 
     w_est: f64,
 
@@ -119,8 +117,7 @@ fn collapse_cwnd(r: &mut Recovery) {
 
     r.congestion_recovery_start_time = None;
 
-    cubic.w_last_max = r.congestion_window as f64;
-    cubic.w_max = cubic.w_last_max;
+    cubic.w_max = r.congestion_window as f64;
 
     // 4.7 Timeout - reduce ssthresh based on BETA_CUBIC
     r.ssthresh = (r.congestion_window as f64 * BETA_CUBIC) as usize;
@@ -311,15 +308,13 @@ fn congestion_event(
         r.congestion_recovery_start_time = Some(now);
 
         // Fast convergence
-        if r.cubic_state.w_max < r.cubic_state.w_last_max {
-            r.cubic_state.w_last_max = r.cubic_state.w_max;
+        if (r.congestion_window as f64) < r.cubic_state.w_max {
             r.cubic_state.w_max =
-                r.cubic_state.w_max as f64 * (1.0 + BETA_CUBIC) / 2.0;
+                r.congestion_window as f64 * (1.0 + BETA_CUBIC) / 2.0;
         } else {
-            r.cubic_state.w_last_max = r.cubic_state.w_max;
+            r.cubic_state.w_max = r.congestion_window as f64;
         }
 
-        r.cubic_state.w_max = r.congestion_window as f64;
         r.ssthresh = (r.congestion_window as f64 * BETA_CUBIC) as usize;
         r.ssthresh = cmp::max(
             r.ssthresh,
@@ -684,5 +679,66 @@ mod tests {
 
         // During LSS cwnd will be increased less than usual slow start.
         assert_eq!(r.cwnd(), cwnd_prev + r.max_datagram_size);
+    }
+
+    #[test]
+    fn cubic_fast_convergence() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::CUBIC);
+
+        let mut r = Recovery::new(&cfg);
+        let mut now = Instant::now();
+        let prev_cwnd = r.cwnd();
+
+        // Send initcwnd full MSS packets to become no longer app limited
+        for _ in 0..recovery::INITIAL_WINDOW_PACKETS {
+            r.on_packet_sent_cc(r.max_datagram_size, now);
+        }
+
+        // Trigger congestion event to update ssthresh
+        r.congestion_event(now, packet::EPOCH_APPLICATION, now);
+
+        // After 1st congestion event, cwnd will be reduced.
+        let cur_cwnd = (prev_cwnd as f64 * BETA_CUBIC) as usize;
+        assert_eq!(r.cwnd(), cur_cwnd);
+
+        // Shift current time by 1 RTT.
+        let rtt = Duration::from_millis(100);
+        r.update_rtt(rtt, Duration::from_millis(0), now);
+
+        // Exit from the recovery.
+        now += rtt;
+
+        // During Congestion Avoidance, it will take
+        // 5 ACKs to increase cwnd by 1 MSS.
+        for _ in 0..5 {
+            let acked = vec![Acked {
+                pkt_num: 0,
+                time_sent: now,
+                size: r.max_datagram_size,
+            }];
+
+            r.on_packets_acked(acked, packet::EPOCH_APPLICATION, now);
+            now += rtt;
+        }
+
+        assert_eq!(r.cwnd(), cur_cwnd + r.max_datagram_size);
+
+        let prev_cwnd = r.cwnd();
+
+        // Fast convergence: now there is 2nd congestion event and
+        // cwnd is not fully recovered to w_max, w_max will be
+        // further reduced.
+        r.congestion_event(now, packet::EPOCH_APPLICATION, now);
+
+        // After 2nd congestion event, cwnd will be reduced.
+        let cur_cwnd = (prev_cwnd as f64 * BETA_CUBIC) as usize;
+        assert_eq!(r.cwnd(), cur_cwnd);
+
+        // w_max will be further reduced, not prev_cwnd
+        assert_eq!(
+            r.cubic_state.w_max,
+            prev_cwnd as f64 * (1.0 + BETA_CUBIC) / 2.0
+        );
     }
 }
