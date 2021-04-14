@@ -8649,6 +8649,7 @@ mod tests {
 }
 
 pub use crate::packet::ConnectionId;
+pub use crate::frame::Frame;
 pub use crate::packet::Header;
 pub use crate::packet::Type;
 
