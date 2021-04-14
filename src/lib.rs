@@ -55,13 +55,23 @@
 //! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
 //! # let server_name = "quic.tech";
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
+//! # let to = "127.0.0.1:1234".parse().unwrap();
 //! // Client connection.
-//! let conn = quiche::connect(Some(&server_name), &scid, &mut config)?;
+//! let conn = quiche::connect(Some(&server_name), &scid, to, &mut config)?;
 //!
 //! // Server connection.
-//! let conn = quiche::accept(&scid, None, &mut config)?;
+//! # let from = "127.0.0.1:1234".parse().unwrap();
+//! let conn = quiche::accept(&scid, None, from, &mut config)?;
 //! # Ok::<(), quiche::Error>(())
 //! ```
+//!
+//! In both cases, the application is responsible for generating a new source
+//! connection ID that will be used to identify the new connection.
+//!
+//! The application also need to pass the address of the remote peer of the
+//! connection: in the case of a client that would be the address of the server
+//! it is trying to connect to, and for a server that is the address of the
+//! client that initiated the connection.
 //!
 //! ## Handling incoming packets
 //!
@@ -73,11 +83,14 @@
 //! # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
 //! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-//! # let mut conn = quiche::accept(&scid, None, &mut config)?;
+//! # let from = "127.0.0.1:1234".parse().unwrap();
+//! # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
 //! loop {
-//!     let read = socket.recv(&mut buf).unwrap();
+//!     let (read, from) = socket.recv_from(&mut buf).unwrap();
 //!
-//!     let read = match conn.recv(&mut buf[..read]) {
+//!     let recv_info = quiche::RecvInfo { from };
+//!
+//!     let read = match conn.recv(&mut buf[..read], recv_info) {
 //!         Ok(v) => v,
 //!
 //!         Err(quiche::Error::Done) => {
@@ -94,6 +107,10 @@
 //! # Ok::<(), quiche::Error>(())
 //! ```
 //!
+//! The application has to pass a [`RecvInfo`] structure in order to provide
+//! additional information about the received packet (such as the address it
+//! was received from).
+//!
 //! ## Generating outgoing packets
 //!
 //! Outgoing packet are generated using the connection's [`send()`] method
@@ -104,9 +121,10 @@
 //! # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
 //! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-//! # let mut conn = quiche::accept(&scid, None, &mut config)?;
+//! # let from = "127.0.0.1:1234".parse().unwrap();
+//! # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
 //! loop {
-//!     let write = match conn.send(&mut out) {
+//!     let (write, send_info) = match conn.send(&mut out) {
 //!         Ok(v) => v,
 //!
 //!         Err(quiche::Error::Done) => {
@@ -120,10 +138,14 @@
 //!         },
 //!     };
 //!
-//!     socket.send(&out[..write]).unwrap();
+//!     socket.send_to(&out[..write], &send_info.to).unwrap();
 //! }
 //! # Ok::<(), quiche::Error>(())
 //! ```
+//!
+//! The application will be provided with a [`SendInfo`] structure providing
+//! additional information about the newly created packet (such as the address
+//! the packet should be sent to).
 //!
 //! When packets are sent, the application is responsible for maintaining a
 //! timer to react to time-based connection events. The timer expiration can be
@@ -132,7 +154,8 @@
 //! ```
 //! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-//! # let mut conn = quiche::accept(&scid, None, &mut config)?;
+//! # let from = "127.0.0.1:1234".parse().unwrap();
+//! # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
 //! let timeout = conn.timeout();
 //! # Ok::<(), quiche::Error>(())
 //! ```
@@ -147,13 +170,14 @@
 //! # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
 //! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-//! # let mut conn = quiche::accept(&scid, None, &mut config)?;
+//! # let from = "127.0.0.1:1234".parse().unwrap();
+//! # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
 //! // Timeout expired, handle it.
 //! conn.on_timeout();
 //!
 //! // Send more packets as needed after timeout.
 //! loop {
-//!     let write = match conn.send(&mut out) {
+//!     let (write, send_info) = match conn.send(&mut out) {
 //!         Ok(v) => v,
 //!
 //!         Err(quiche::Error::Done) => {
@@ -167,7 +191,7 @@
 //!         },
 //!     };
 //!
-//!     socket.send(&out[..write]).unwrap();
+//!     socket.send_to(&out[..write], &send_info.to).unwrap();
 //! }
 //! # Ok::<(), quiche::Error>(())
 //! ```
@@ -182,7 +206,8 @@
 //! ```no_run
 //! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-//! # let mut conn = quiche::accept(&scid, None, &mut config)?;
+//! # let from = "127.0.0.1:1234".parse().unwrap();
+//! # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
 //! if conn.is_established() {
 //!     // Handshake completed, send some data on stream 0.
 //!     conn.stream_send(0, b"hello", true)?;
@@ -201,7 +226,8 @@
 //! # let mut buf = [0; 512];
 //! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-//! # let mut conn = quiche::accept(&scid, None, &mut config)?;
+//! # let from = "127.0.0.1:1234".parse().unwrap();
+//! # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
 //! if conn.is_established() {
 //!     // Iterate over readable streams.
 //!     for stream_id in conn.readable() {
@@ -222,7 +248,9 @@
 //! [`connect()`]: fn.connect.html
 //! [`accept()`]: fn.accept.html
 //! [`recv()`]: struct.Connection.html#method.recv
+//! [`RecvInfo`]: struct.RecvInfo.html
 //! [`send()`]: struct.Connection.html#method.send
+//! [`SendInfo`]: struct.SendInfo.html
 //! [`timeout()`]: struct.Connection.html#method.timeout
 //! [`on_timeout()`]: struct.Connection.html#method.on_timeout
 //! [`stream_send()`]: struct.Connection.html#method.stream_send
@@ -269,6 +297,8 @@ extern crate log;
 
 use std::cmp;
 use std::time;
+
+use std::net::SocketAddr;
 
 use std::pin::Pin;
 use std::str::FromStr;
@@ -438,6 +468,20 @@ impl std::convert::From<octets::BufferTooShortError> for Error {
     fn from(_err: octets::BufferTooShortError) -> Self {
         Error::BufferTooShort
     }
+}
+
+/// Ancillary information about infoming packets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RecvInfo {
+    /// The address the packet was received from.
+    pub from: SocketAddr,
+}
+
+/// Ancillary information about outgoing packets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SendInfo {
+    /// The address the packet should be sent to.
+    pub to: SocketAddr,
 }
 
 /// Represents information carried by `CONNECTION_CLOSE` frames.
@@ -876,6 +920,8 @@ pub struct Connection {
     /// Loss recovery and congestion control state.
     recovery: recovery::Recovery,
 
+    peer_addr: SocketAddr,
+
     /// List of supported application protocols.
     application_protos: Vec<Vec<u8>>,
 
@@ -1022,14 +1068,16 @@ pub struct Connection {
 /// ```no_run
 /// # let mut config = quiche::Config::new(0xbabababa)?;
 /// # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-/// let conn = quiche::accept(&scid, None, &mut config)?;
+/// # let from = "127.0.0.1:1234".parse().unwrap();
+/// let conn = quiche::accept(&scid, None, from, &mut config)?;
 /// # Ok::<(), quiche::Error>(())
 /// ```
 #[inline]
 pub fn accept(
-    scid: &ConnectionId, odcid: Option<&ConnectionId>, config: &mut Config,
+    scid: &ConnectionId, odcid: Option<&ConnectionId>, from: SocketAddr,
+    config: &mut Config,
 ) -> Result<Pin<Box<Connection>>> {
-    let conn = Connection::new(scid, odcid, config, true)?;
+    let conn = Connection::new(scid, odcid, from, config, true)?;
 
     Ok(conn)
 }
@@ -1046,14 +1094,16 @@ pub fn accept(
 /// # let mut config = quiche::Config::new(0xbabababa)?;
 /// # let server_name = "quic.tech";
 /// # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-/// let conn = quiche::connect(Some(&server_name), &scid, &mut config)?;
+/// # let to = "127.0.0.1:1234".parse().unwrap();
+/// let conn = quiche::connect(Some(&server_name), &scid, to, &mut config)?;
 /// # Ok::<(), quiche::Error>(())
 /// ```
 #[inline]
 pub fn connect(
-    server_name: Option<&str>, scid: &ConnectionId, config: &mut Config,
+    server_name: Option<&str>, scid: &ConnectionId, to: SocketAddr,
+    config: &mut Config,
 ) -> Result<Pin<Box<Connection>>> {
-    let conn = Connection::new(scid, None, config, false)?;
+    let conn = Connection::new(scid, None, to, config, false)?;
 
     if let Some(server_name) = server_name {
         conn.handshake.lock().unwrap().set_host_name(server_name)?;
@@ -1147,7 +1197,7 @@ pub fn negotiate_version(
 ///     return Ok(());
 /// }
 ///
-/// let conn = quiche::accept(&scid, odcid.as_ref(), &mut config)?;
+/// let conn = quiche::accept(&scid, odcid.as_ref(), src, &mut config)?;
 /// # Ok::<(), quiche::Error>(())
 /// ```
 #[inline]
@@ -1207,16 +1257,16 @@ macro_rules! qlog_with {
 
 impl Connection {
     fn new(
-        scid: &ConnectionId, odcid: Option<&ConnectionId>, config: &mut Config,
-        is_server: bool,
+        scid: &ConnectionId, odcid: Option<&ConnectionId>, peer: SocketAddr,
+        config: &mut Config, is_server: bool,
     ) -> Result<Pin<Box<Connection>>> {
         let tls = config.tls_ctx.lock().unwrap().new_handshake()?;
-        Connection::with_tls(scid, odcid, config, tls, is_server)
+        Connection::with_tls(scid, odcid, peer, config, tls, is_server)
     }
 
     fn with_tls(
-        scid: &ConnectionId, odcid: Option<&ConnectionId>, config: &mut Config,
-        tls: tls::Handshake, is_server: bool,
+        scid: &ConnectionId, odcid: Option<&ConnectionId>, peer: SocketAddr,
+        config: &mut Config, tls: tls::Handshake, is_server: bool,
     ) -> Result<Pin<Box<Connection>>> {
         let max_rx_data = config.local_transport_params.initial_max_data;
 
@@ -1244,6 +1294,8 @@ impl Connection {
             handshake: Mutex::new(tls),
 
             recovery: recovery::Recovery::new(&config),
+
+            peer_addr: peer,
 
             application_protos: config.application_protos.clone(),
 
@@ -1468,11 +1520,14 @@ impl Connection {
     /// # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     /// # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
     /// # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-    /// # let mut conn = quiche::accept(&scid, None, &mut config)?;
+    /// # let from = "127.0.0.1:1234".parse().unwrap();
+    /// # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
     /// loop {
-    ///     let read = socket.recv(&mut buf).unwrap();
+    ///     let (read, from) = socket.recv_from(&mut buf).unwrap();
     ///
-    ///     let read = match conn.recv(&mut buf[..read]) {
+    ///     let recv_info = quiche::RecvInfo { from };
+    ///
+    ///     let read = match conn.recv(&mut buf[..read], recv_info) {
     ///         Ok(v) => v,
     ///
     ///         Err(e) => {
@@ -1483,7 +1538,7 @@ impl Connection {
     /// }
     /// # Ok::<(), quiche::Error>(())
     /// ```
-    pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+    pub fn recv(&mut self, buf: &mut [u8], _info: RecvInfo) -> Result<usize> {
         let len = buf.len();
 
         if len == 0 {
@@ -2056,9 +2111,10 @@ impl Connection {
     /// # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     /// # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
     /// # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-    /// # let mut conn = quiche::accept(&scid, None, &mut config)?;
+    /// # let from = "127.0.0.1:1234".parse().unwrap();
+    /// # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
     /// loop {
-    ///     let write = match conn.send(&mut out) {
+    ///     let (write, send_info) = match conn.send(&mut out) {
     ///         Ok(v) => v,
     ///
     ///         Err(quiche::Error::Done) => {
@@ -2072,11 +2128,11 @@ impl Connection {
     ///         },
     ///     };
     ///
-    ///     socket.send(&out[..write]).unwrap();
+    ///     socket.send_to(&out[..write], &send_info.to).unwrap();
     /// }
     /// # Ok::<(), quiche::Error>(())
     /// ```
-    pub fn send(&mut self, out: &mut [u8]) -> Result<usize> {
+    pub fn send(&mut self, out: &mut [u8]) -> Result<(usize, SendInfo)> {
         if out.is_empty() {
             return Err(Error::BufferTooShort);
         }
@@ -2134,7 +2190,9 @@ impl Connection {
             done += pad_len;
         }
 
-        Ok(done)
+        let info = SendInfo { to: self.peer_addr };
+
+        Ok((done, info))
     }
 
     fn send_single(&mut self, out: &mut [u8]) -> Result<(packet::Type, usize)> {
@@ -2954,7 +3012,8 @@ impl Connection {
     /// # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     /// # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
     /// # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-    /// # let mut conn = quiche::accept(&scid, None, &mut config)?;
+    /// # let from = "127.0.0.1:1234".parse().unwrap();
+    /// # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
     /// # let stream_id = 0;
     /// while let Ok((read, fin)) = conn.stream_recv(stream_id, &mut buf) {
     ///     println!("Got {} bytes on stream {}", read, stream_id);
@@ -3059,7 +3118,8 @@ impl Connection {
     /// # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     /// # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
     /// # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-    /// # let mut conn = quiche::accept(&scid, None, &mut config)?;
+    /// # let from = "127.0.0.1:1234".parse().unwrap();
+    /// # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
     /// # let stream_id = 0;
     /// conn.stream_send(stream_id, b"hello", true)?;
     /// # Ok::<(), quiche::Error>(())
@@ -3376,7 +3436,8 @@ impl Connection {
     /// # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     /// # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
     /// # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-    /// # let mut conn = quiche::accept(&scid, None, &mut config)?;
+    /// # let from = "127.0.0.1:1234".parse().unwrap();
+    /// # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
     /// // Iterate over readable streams.
     /// for stream_id in conn.readable() {
     ///     // Stream is readable, read until there's no more data.
@@ -3410,7 +3471,8 @@ impl Connection {
     /// # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     /// # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
     /// # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-    /// # let mut conn = quiche::accept(&scid, None, &mut config)?;
+    /// # let from = "127.0.0.1:1234".parse().unwrap();
+    /// # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
     /// // Iterate over writable streams.
     /// for stream_id in conn.writable() {
     ///     // Stream is writable, write some data.
@@ -3475,7 +3537,8 @@ impl Connection {
     /// # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     /// # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
     /// # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-    /// # let mut conn = quiche::accept(&scid, None, &mut config)?;
+    /// # let from = "127.0.0.1:1234".parse().unwrap();
+    /// # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
     /// let mut dgram_buf = [0; 512];
     /// while let Ok((len)) = conn.dgram_recv(&mut dgram_buf) {
     ///     println!("Got {} bytes of DATAGRAM", len);
@@ -3548,7 +3611,8 @@ impl Connection {
     /// # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     /// # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
     /// # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-    /// # let mut conn = quiche::accept(&scid, None, &mut config)?;
+    /// # let from = "127.0.0.1:1234".parse().unwrap();
+    /// # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
     /// conn.dgram_send(b"hello")?;
     /// # Ok::<(), quiche::Error>(())
     /// ```
@@ -3582,7 +3646,8 @@ impl Connection {
     /// # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     /// # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
     /// # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-    /// # let mut conn = quiche::accept(&scid, None, &mut config)?;
+    /// # let from = "127.0.0.1:1234".parse().unwrap();
+    /// # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
     /// conn.dgram_send(b"hello")?;
     /// conn.dgram_purge_outgoing(&|d: &[u8]| -> bool { d[0] == 0 });
     /// # Ok::<(), quiche::Error>(())
@@ -3604,7 +3669,8 @@ impl Connection {
     /// # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     /// # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
     /// # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-    /// # let mut conn = quiche::accept(&scid, None, &mut config)?;
+    /// # let from = "127.0.0.1:1234".parse().unwrap();
+    /// # let mut conn = quiche::accept(&scid, None, from, &mut config)?;
     /// if let Some(payload_size) = conn.dgram_max_writable_len() {
     ///     if payload_size > 5 {
     ///         conn.dgram_send(b"hello")?;
@@ -5036,14 +5102,21 @@ pub mod testing {
             let mut client_scid = [0; 16];
             rand::rand_bytes(&mut client_scid[..]);
             let client_scid = ConnectionId::from_ref(&client_scid);
+            let client_addr = "127.0.0.1:1234".parse().unwrap();
 
             let mut server_scid = [0; 16];
             rand::rand_bytes(&mut server_scid[..]);
             let server_scid = ConnectionId::from_ref(&server_scid);
+            let server_addr = "127.0.0.1:4321".parse().unwrap();
 
             Ok(Pipe {
-                client: connect(Some("quic.tech"), &client_scid, config)?,
-                server: accept(&server_scid, None, config)?,
+                client: connect(
+                    Some("quic.tech"),
+                    &client_scid,
+                    client_addr,
+                    config,
+                )?,
+                server: accept(&server_scid, None, server_addr, config)?,
             })
         }
 
@@ -5051,10 +5124,12 @@ pub mod testing {
             let mut client_scid = [0; 16];
             rand::rand_bytes(&mut client_scid[..]);
             let client_scid = ConnectionId::from_ref(&client_scid);
+            let client_addr = "127.0.0.1:1234".parse().unwrap();
 
             let mut server_scid = [0; 16];
             rand::rand_bytes(&mut server_scid[..]);
             let server_scid = ConnectionId::from_ref(&server_scid);
+            let server_addr = "127.0.0.1:4321".parse().unwrap();
 
             let mut config = Config::new(crate::PROTOCOL_VERSION)?;
             config.load_cert_chain_from_pem_file("examples/cert.crt")?;
@@ -5067,8 +5142,13 @@ pub mod testing {
             config.set_initial_max_streams_uni(3);
 
             Ok(Pipe {
-                client: connect(Some("quic.tech"), &client_scid, client_config)?,
-                server: accept(&server_scid, None, &mut config)?,
+                client: connect(
+                    Some("quic.tech"),
+                    &client_scid,
+                    client_addr,
+                    client_config,
+                )?,
+                server: accept(&server_scid, None, server_addr, &mut config)?,
             })
         }
 
@@ -5076,10 +5156,12 @@ pub mod testing {
             let mut client_scid = [0; 16];
             rand::rand_bytes(&mut client_scid[..]);
             let client_scid = ConnectionId::from_ref(&client_scid);
+            let client_addr = "127.0.0.1:1234".parse().unwrap();
 
             let mut server_scid = [0; 16];
             rand::rand_bytes(&mut server_scid[..]);
             let server_scid = ConnectionId::from_ref(&server_scid);
+            let server_addr = "127.0.0.1:4321".parse().unwrap();
 
             let mut config = Config::new(crate::PROTOCOL_VERSION)?;
             config.set_application_protos(b"\x06proto1\x06proto2")?;
@@ -5090,8 +5172,13 @@ pub mod testing {
             config.set_initial_max_streams_uni(3);
 
             Ok(Pipe {
-                client: connect(Some("quic.tech"), &client_scid, &mut config)?,
-                server: accept(&server_scid, None, server_config)?,
+                client: connect(
+                    Some("quic.tech"),
+                    &client_scid,
+                    client_addr,
+                    &mut config,
+                )?,
+                server: accept(&server_scid, None, server_addr, server_config)?,
             })
         }
 
@@ -5132,6 +5219,22 @@ pub mod testing {
             Ok(())
         }
 
+        pub fn client_recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+            let info = RecvInfo {
+                from: self.client.peer_addr,
+            };
+
+            self.client.recv(buf, info)
+        }
+
+        pub fn server_recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+            let info = RecvInfo {
+                from: self.server.peer_addr,
+            };
+
+            self.server.recv(buf, info)
+        }
+
         pub fn send_pkt_to_server(
             &mut self, pkt_type: packet::Type, frames: &[frame::Frame],
             buf: &mut [u8],
@@ -5144,12 +5247,16 @@ pub mod testing {
     pub fn recv_send(
         conn: &mut Connection, buf: &mut [u8], len: usize,
     ) -> Result<usize> {
-        conn.recv(&mut buf[..len])?;
+        let info = RecvInfo {
+            from: conn.peer_addr,
+        };
+
+        conn.recv(&mut buf[..len], info)?;
 
         let mut off = 0;
 
         match conn.send(&mut buf[off..]) {
-            Ok(write) => off += write,
+            Ok((write, _)) => off += write,
 
             Err(Error::Done) => (),
 
@@ -5163,7 +5270,11 @@ pub mod testing {
         conn: &mut Connection, flight: Vec<Vec<u8>>,
     ) -> Result<()> {
         for mut pkt in flight {
-            conn.recv(&mut pkt)?;
+            let info = RecvInfo {
+                from: conn.peer_addr,
+            };
+
+            conn.recv(&mut pkt, info)?;
         }
 
         Ok(())
@@ -5176,7 +5287,7 @@ pub mod testing {
             let mut out = vec![0u8; 65535];
 
             match conn.send(&mut out) {
-                Ok(written) => out.truncate(written),
+                Ok((written, _)) => out.truncate(written),
 
                 Err(Error::Done) => break,
 
@@ -5384,12 +5495,12 @@ mod tests {
 
         let mut pipe = testing::Pipe::with_client_config(&mut config).unwrap();
 
-        let mut len = pipe.client.send(&mut buf).unwrap();
+        let (mut len, _) = pipe.client.send(&mut buf).unwrap();
 
         let hdr = packet::Header::from_slice(&mut buf[..len], 0).unwrap();
         len = crate::negotiate_version(&hdr.scid, &hdr.dcid, &mut buf).unwrap();
 
-        assert_eq!(pipe.client.recv(&mut buf[..len]), Ok(len));
+        assert_eq!(pipe.client_recv(&mut buf[..len]), Ok(len));
 
         assert_eq!(pipe.handshake(), Ok(()));
 
@@ -5425,11 +5536,11 @@ mod tests {
         assert_eq!(pipe.client.encode_transport_params(), Ok(()));
 
         // Client sends initial flight.
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         // Server rejects transport parameters.
         assert_eq!(
-            pipe.server.recv(&mut buf[..len]),
+            pipe.server_recv(&mut buf[..len]),
             Err(Error::InvalidTransportParam)
         );
     }
@@ -5447,11 +5558,11 @@ mod tests {
         assert_eq!(pipe.client.encode_transport_params(), Ok(()));
 
         // Client sends initial flight.
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         // Server rejects transport parameters.
         assert_eq!(
-            pipe.server.recv(&mut buf[..len]),
+            pipe.server_recv(&mut buf[..len]),
             Err(Error::InvalidTransportParam)
         );
     }
@@ -5736,7 +5847,7 @@ mod tests {
         let written =
             testing::encode_pkt(&mut pipe.client, pkt_type, &frames, &mut buf)
                 .unwrap();
-        assert_eq!(pipe.server.recv(&mut buf[..written]), Ok(written));
+        assert_eq!(pipe.server_recv(&mut buf[..written]), Ok(written));
 
         assert_eq!(pipe.server.max_send_bytes, 195);
 
@@ -6379,7 +6490,8 @@ mod tests {
         let written =
             testing::encode_pkt(&mut pipe.client, pkt_type, &frames, &mut buf)
                 .unwrap();
-        assert_eq!(pipe.server.recv(&mut buf[..written]), Ok(written));
+
+        assert_eq!(pipe.server_recv(&mut buf[..written]), Ok(written));
 
         // Send 1-RTT packet #1.
         let frames = [frame::Frame::Stream {
@@ -6390,7 +6502,8 @@ mod tests {
         let written =
             testing::encode_pkt(&mut pipe.client, pkt_type, &frames, &mut buf)
                 .unwrap();
-        assert_eq!(pipe.server.recv(&mut buf[..written]), Ok(written));
+
+        assert_eq!(pipe.server_recv(&mut buf[..written]), Ok(written));
 
         assert!(!pipe.server.is_established());
 
@@ -6624,7 +6737,7 @@ mod tests {
         let mut r = pipe.server.readable();
         assert_eq!(r.next(), None);
 
-        let len = pipe.server.send(&mut buf).unwrap();
+        let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         let mut dummy = buf[..len].to_vec();
 
@@ -6640,7 +6753,7 @@ mod tests {
             })
         );
 
-        assert_eq!(pipe.client.recv(&mut buf[..len]), Ok(len));
+        assert_eq!(pipe.client_recv(&mut buf[..len]), Ok(len));
 
         assert_eq!(pipe.advance(), Ok(()));
 
@@ -6758,7 +6871,7 @@ mod tests {
         let mut r = pipe.server.writable();
         assert_eq!(r.next(), None);
 
-        let len = pipe.server.send(&mut buf).unwrap();
+        let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         let mut dummy = buf[..len].to_vec();
 
@@ -6775,7 +6888,7 @@ mod tests {
             })
         );
 
-        assert_eq!(pipe.client.recv(&mut buf[..len]), Ok(len));
+        assert_eq!(pipe.client_recv(&mut buf[..len]), Ok(len));
 
         assert_eq!(pipe.advance(), Ok(()));
 
@@ -6819,7 +6932,7 @@ mod tests {
         assert_eq!(pipe.client.stream_send(0, b"aaaaa", false), Ok(5));
         assert_eq!(pipe.client.stream_send(4, b"aaaaa", false), Ok(5));
 
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         let frames =
             testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
@@ -6837,7 +6950,7 @@ mod tests {
             })
         );
 
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         let frames =
             testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
@@ -6850,7 +6963,7 @@ mod tests {
             })
         );
 
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         let frames =
             testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
@@ -7060,7 +7173,7 @@ mod tests {
         assert_eq!(pipe.server.timeout(), None);
 
         assert_eq!(
-            pipe.server.recv(&mut buf[..written]),
+            pipe.server_recv(&mut buf[..written]),
             Err(Error::CryptoFail)
         );
 
@@ -7075,10 +7188,10 @@ mod tests {
         let mut pipe = testing::Pipe::default().unwrap();
 
         // Client sends initial flight.
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         // Server sends initial flight.
-        assert_eq!(pipe.server.recv(&mut buf[..len]), Ok(1200));
+        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(1200));
 
         let frames = [frame::Frame::Padding { len: 10 }];
 
@@ -7096,7 +7209,7 @@ mod tests {
         buf[written - 1] = !buf[written - 1];
 
         // Client will ignore invalid packet.
-        assert_eq!(pipe.client.recv(&mut buf[..written]), Ok(71));
+        assert_eq!(pipe.client_recv(&mut buf[..written]), Ok(71));
 
         // The connection should be alive...
         assert_eq!(pipe.client.is_closed(), false);
@@ -7170,7 +7283,7 @@ mod tests {
         assert_eq!(pipe.server.timeout(), None);
 
         assert_eq!(
-            pipe.server.recv(&mut buf[..written]),
+            pipe.server_recv(&mut buf[..written]),
             Err(Error::BufferTooShort)
         );
 
@@ -7200,12 +7313,12 @@ mod tests {
         // cannot be authenticated during decryption).
         buf[written - 1] = !buf[written - 1];
 
-        assert_eq!(pipe.server.recv(&mut buf[..written]), Ok(written));
+        assert_eq!(pipe.server_recv(&mut buf[..written]), Ok(written));
 
         // Corrupt the packets's first byte to make the header fail decoding.
         buf[0] = 255;
 
-        assert_eq!(pipe.server.recv(&mut buf[..written]), Ok(written));
+        assert_eq!(pipe.server_recv(&mut buf[..written]), Ok(written));
     }
 
     #[test]
@@ -7215,7 +7328,7 @@ mod tests {
         let mut pipe = testing::Pipe::default().unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
 
-        assert_eq!(pipe.server.recv(&mut buf[..0]), Err(Error::BufferTooShort));
+        assert_eq!(pipe.server_recv(&mut buf[..0]), Err(Error::BufferTooShort));
     }
 
     #[test]
@@ -7559,7 +7672,7 @@ mod tests {
         let mut pipe = testing::Pipe::with_server_config(&mut config).unwrap();
 
         // Client sends initial flight.
-        let mut len = pipe.client.send(&mut buf).unwrap();
+        let (mut len, _) = pipe.client.send(&mut buf).unwrap();
 
         // Server sends Retry packet.
         let hdr = Header::from_slice(&mut buf[..len], MAX_CONN_ID_LEN).unwrap();
@@ -7583,16 +7696,17 @@ mod tests {
         .unwrap();
 
         // Client receives Retry and sends new Initial.
-        assert_eq!(pipe.client.recv(&mut buf[..len]), Ok(len));
+        assert_eq!(pipe.client_recv(&mut buf[..len]), Ok(len));
 
-        len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         let hdr = Header::from_slice(&mut buf[..len], MAX_CONN_ID_LEN).unwrap();
         assert_eq!(&hdr.token.unwrap(), token);
 
         // Server accepts connection.
-        pipe.server = accept(&scid, Some(&odcid), &mut config).unwrap();
-        assert_eq!(pipe.server.recv(&mut buf[..len]), Ok(len));
+        let from = "127.0.0.1:1234".parse().unwrap();
+        pipe.server = accept(&scid, Some(&odcid), from, &mut config).unwrap();
+        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         assert_eq!(pipe.advance(), Ok(()));
 
@@ -7618,7 +7732,7 @@ mod tests {
         let mut pipe = testing::Pipe::with_server_config(&mut config).unwrap();
 
         // Client sends initial flight.
-        let mut len = pipe.client.send(&mut buf).unwrap();
+        let (mut len, _) = pipe.client.send(&mut buf).unwrap();
 
         // Server sends Retry packet.
         let hdr = Header::from_slice(&mut buf[..len], MAX_CONN_ID_LEN).unwrap();
@@ -7640,14 +7754,15 @@ mod tests {
         .unwrap();
 
         // Client receives Retry and sends new Initial.
-        assert_eq!(pipe.client.recv(&mut buf[..len]), Ok(len));
+        assert_eq!(pipe.client_recv(&mut buf[..len]), Ok(len));
 
-        len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         // Server accepts connection and send first flight. But original
         // destination connection ID is ignored.
-        pipe.server = accept(&scid, None, &mut config).unwrap();
-        assert_eq!(pipe.server.recv(&mut buf[..len]), Ok(len));
+        let from = "127.0.0.1:1234".parse().unwrap();
+        pipe.server = accept(&scid, None, from, &mut config).unwrap();
+        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
 
@@ -7675,7 +7790,7 @@ mod tests {
         let mut pipe = testing::Pipe::with_server_config(&mut config).unwrap();
 
         // Client sends initial flight.
-        let mut len = pipe.client.send(&mut buf).unwrap();
+        let (mut len, _) = pipe.client.send(&mut buf).unwrap();
 
         // Server sends Retry packet.
         let hdr = Header::from_slice(&mut buf[..len], MAX_CONN_ID_LEN).unwrap();
@@ -7697,15 +7812,16 @@ mod tests {
         .unwrap();
 
         // Client receives Retry and sends new Initial.
-        assert_eq!(pipe.client.recv(&mut buf[..len]), Ok(len));
+        assert_eq!(pipe.client_recv(&mut buf[..len]), Ok(len));
 
-        len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         // Server accepts connection and send first flight. But original
         // destination connection ID is invalid.
+        let from = "127.0.0.1:1234".parse().unwrap();
         let odcid = ConnectionId::from_ref(b"bogus value");
-        pipe.server = accept(&scid, Some(&odcid), &mut config).unwrap();
-        assert_eq!(pipe.server.recv(&mut buf[..len]), Ok(len));
+        pipe.server = accept(&scid, Some(&odcid), from, &mut config).unwrap();
+        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
 
@@ -7761,7 +7877,7 @@ mod tests {
         assert_eq!(pipe.client.stream_send(8, b"aaaaaaaaaaa", false), Ok(10));
         assert_eq!(pipe.client.blocked_limit, Some(30));
 
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
         assert_eq!(pipe.client.blocked_limit, None);
 
         let frames =
@@ -7798,7 +7914,7 @@ mod tests {
         assert_eq!(pipe.client.stream_send(0, b"aaaaaa", false), Ok(5));
         assert_eq!(pipe.client.streams.blocked().len(), 1);
 
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
         assert_eq!(pipe.client.streams.blocked().len(), 0);
 
         let frames =
@@ -7831,7 +7947,7 @@ mod tests {
         // again.
         assert_eq!(pipe.client.stream_send(4, b"a", false), Ok(1));
 
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
         assert_eq!(pipe.client.streams.blocked().len(), 0);
 
         let frames =
@@ -7854,7 +7970,7 @@ mod tests {
         assert_eq!(pipe.client.stream_send(0, b"aaaaaa", false), Ok(0));
         assert_eq!(pipe.client.streams.blocked().len(), 1);
 
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
         assert_eq!(pipe.client.streams.blocked().len(), 0);
 
         let frames =
@@ -8157,7 +8273,8 @@ mod tests {
         let mut off = 0;
 
         for _ in 1..=3 {
-            let len = pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
+            let (len, _) =
+                pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
                 testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
@@ -8179,7 +8296,8 @@ mod tests {
         let mut off = 0;
 
         for _ in 1..=3 {
-            let len = pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
+            let (len, _) =
+                pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
                 testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
@@ -8201,7 +8319,8 @@ mod tests {
         let mut off = 0;
 
         for _ in 1..=3 {
-            let len = pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
+            let (len, _) =
+                pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
                 testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
@@ -8223,7 +8342,8 @@ mod tests {
         let mut off = 0;
 
         for _ in 1..=3 {
-            let len = pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
+            let (len, _) =
+                pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
                 testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
@@ -8236,7 +8356,8 @@ mod tests {
                 })
             );
 
-            let len = pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
+            let (len, _) =
+                pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
                 testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
@@ -8259,7 +8380,8 @@ mod tests {
         let mut off = 0;
 
         for _ in 1..=3 {
-            let len = pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
+            let (len, _) =
+                pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
                 testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
@@ -8343,7 +8465,7 @@ mod tests {
         assert_eq!(pipe.server.stream_priority(0, 20, true), Ok(()));
 
         // First is stream 8.
-        let len = pipe.server.send(&mut buf).unwrap();
+        let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
@@ -8357,7 +8479,7 @@ mod tests {
         );
 
         // Then is stream 0.
-        let len = pipe.server.send(&mut buf).unwrap();
+        let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
@@ -8371,7 +8493,7 @@ mod tests {
         );
 
         // Then are stream 12 and 4, with the same priority.
-        let len = pipe.server.send(&mut buf).unwrap();
+        let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
@@ -8384,7 +8506,7 @@ mod tests {
             })
         );
 
-        let len = pipe.server.send(&mut buf).unwrap();
+        let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
@@ -8426,7 +8548,7 @@ mod tests {
         assert_eq!(pipe.client.recovery.loss_probes[epoch], 1);
 
         // Client retransmits stream data in PTO probe.
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
         assert_eq!(pipe.client.recovery.loss_probes[epoch], 0);
 
         let frames =
@@ -8470,12 +8592,12 @@ mod tests {
         assert_eq!(pipe.server.handshake_status().peer_verified_address, true);
 
         // Client sends padded Initial.
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
         assert_eq!(len, 1200);
 
         // Server receives client's Initial and sends own Initial and Handshake
         // until it's blocked by the anti-amplification limit.
-        assert_eq!(pipe.server.recv(&mut buf[..len]), Ok(len));
+        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
 
         assert_eq!(pipe.client.handshake_status().has_handshake_keys, false);
@@ -8506,11 +8628,11 @@ mod tests {
         let mut pipe = testing::Pipe::default().unwrap();
 
         // Client sends padded Initial.
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
         assert_eq!(len, 1200);
 
         // Server receives client's Initial and sends own Initial and Handshake.
-        assert_eq!(pipe.server.recv(&mut buf[..len]), Ok(len));
+        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
         testing::process_flight(&mut pipe.client, flight).unwrap();
@@ -8519,7 +8641,7 @@ mod tests {
         let (ty, len) = pipe.client.send_single(&mut buf).unwrap();
         assert_eq!(ty, Type::Initial);
 
-        assert_eq!(pipe.server.recv(&mut buf[..len]), Ok(len));
+        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         // Client sends Handshake packet.
         let (ty, len) = pipe.client.send_single(&mut buf).unwrap();
@@ -8532,7 +8654,7 @@ mod tests {
         assert_eq!(hdr.ty, Type::Initial);
 
         // Server receives corrupted packet without returning an error.
-        assert_eq!(pipe.server.recv(&mut buf[..len]), Ok(len));
+        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
     }
 
     #[test]
@@ -8581,13 +8703,13 @@ mod tests {
         assert!(!pipe.client.recovery.app_limited());
         assert_eq!(pipe.client.dgram_send_queue.byte_size(), 1_000_000);
 
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         assert_ne!(pipe.client.dgram_send_queue.byte_size(), 0);
         assert_ne!(pipe.client.dgram_send_queue.byte_size(), 1_000_000);
         assert!(!pipe.client.recovery.app_limited());
 
-        assert_eq!(pipe.server.recv(&mut buf[..len]), Ok(len));
+        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         let flight = testing::emit_flight(&mut pipe.client).unwrap();
         testing::process_flight(&mut pipe.server, flight).unwrap();
@@ -8929,7 +9051,7 @@ mod tests {
             Err(Error::Done)
         );
 
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         let frames =
             testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
@@ -8955,7 +9077,7 @@ mod tests {
 
         assert_eq!(pipe.client.close(true, 0x4321, b"hello!"), Err(Error::Done));
 
-        let len = pipe.client.send(&mut buf).unwrap();
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         let frames =
             testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
@@ -9010,10 +9132,12 @@ mod tests {
         let mut client_scid = [0; 16];
         rand::rand_bytes(&mut client_scid[..]);
         let client_scid = ConnectionId::from_ref(&client_scid);
+        let client_addr = "127.0.0.1:1234".parse().unwrap();
 
         let mut server_scid = [0; 16];
         rand::rand_bytes(&mut server_scid[..]);
         let server_scid = ConnectionId::from_ref(&server_scid);
+        let server_addr = "127.0.0.1:4321".parse().unwrap();
 
         let mut client_config = Config::new(crate::PROTOCOL_VERSION).unwrap();
         client_config
@@ -9039,9 +9163,15 @@ mod tests {
         server_config.set_max_send_udp_payload_size(1500);
 
         let mut pipe = testing::Pipe {
-            client: connect(Some("quic.tech"), &client_scid, &mut client_config)
+            client: connect(
+                Some("quic.tech"),
+                &client_scid,
+                client_addr,
+                &mut client_config,
+            )
+            .unwrap(),
+            server: accept(&server_scid, None, server_addr, &mut server_config)
                 .unwrap(),
-            server: accept(&server_scid, None, &mut server_config).unwrap(),
         };
 
         // Before handshake
